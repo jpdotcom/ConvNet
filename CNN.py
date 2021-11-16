@@ -6,6 +6,7 @@ from cupy.lib.stride_tricks import as_strided
 import math
  
 class CNN:
+    
     def getrandparameters(self,size,is_filter):
       range=0
       if (is_filter):
@@ -24,8 +25,6 @@ class CNN:
       
       self.layer3_filters=self.getrandparameters((filter_sizes[2][0],filter_sizes[2][1],sizes[2],sizes[3]),1)
       
-
-
       #bias setup 
  
       self.CNN_layer1_bias=cp.zeros((sizes[1],))
@@ -43,6 +42,11 @@ class CNN:
       #inverse pooling setup
  
       self.inverse_pool_map=[0]*3
+    
+      #accuracy and loss over training set
+      self.wrong=0
+      self.acc=0 
+      self.loss=0
     def conv2d(self,a, b):
       
       a=self.get_submatrices(a,b.shape)
@@ -123,7 +127,7 @@ class CNN:
  
     def run(self,image,p,training):
       s=time.time()
-    
+        
       self.input=image
       batch_size,h,w,channels=self.input.shape
       if training:
@@ -159,13 +163,21 @@ class CNN:
       self.MLP_layer=self.softmax(cp.matmul(self.MLP_weights,self.flatten)+self.MLP_bias)
       
       return cp.argmax(self.MLP_layer,axis=1)
-    def findgradient(self,labels,training):
- 
+    def findgradient(self,labels,training,num_images,guess):
       labels=labels.reshape(labels.shape[0],10,1)
-      curr_error=self.MLP_layer-labels
- 
+       
+      #update loss and acc
+      n_values=10
+      guess=guess.reshape(guess.shape[0],)
+      one_hot_encoded_guess= cp.eye(n_values)[guess]
+      one_hot_encoded_guess[cp.arange(guess.size),guess] = 1
+      one_hot_encoded_guess=one_hot_encoded_guess.reshape(one_hot_encoded_guess.shape[0],n_values,1)
+      self.loss+=cp.sum((self.MLP_layer-labels)**2)/num_images
+      self.wrong+=(cp.sum(cp.max(labels-one_hot_encoded_guess,axis=(1,2))))
+      self.acc=(1-self.wrong/num_images)*100
       
- 
+      #backpropogation
+      curr_error=self.MLP_layer-labels
       self.MLP_weights_gradient=cp.matmul(curr_error,self.flatten.transpose(0,2,1))
       
       self.MLP_bias_gradient=curr_error
@@ -229,29 +241,29 @@ class CNN:
       return
     
     def train(self,images,labels,num_images,batch_size):
-      learning_rate=0.04*batch_size/200
+      learning_rate=0.06*batch_size/200
       s=time.time()
-      self.run(images,[1,1,1,0.5],True)
-      self.findgradient(labels,True)
+      guess=self.run(images,[1,0.9,0.9,0.5],True)
+      
+      self.findgradient(labels,True,num_images,guess)
       self.gradientdescent(learning_rate,batch_size)   
-    
+        
     def clear(self):
         self.CNN_layer1=self.CNN_layer2=self.CNN_layer3=self.pool1=self.pool2=self.pool3=self.pool1_dropout=self.pool2_dropout=self.pool3_dropout=self.flatten=self.MLP_layer=self.CNN_layer1_bias_gradient=self.layer1_filters_gradient=self.CNN_layer2_bias_gradient=self.layer2_filters_gradient=self.CNN_layer3_bias_gradient=self.layer3_filters_gradient=self.MLP_bias_gradient=self.MLP_weights_gradient=None   
- 
-    def checkaccuracy(self,x_test,y_test,num_images,typeloss):
-       
-        
+    
+    #FOR TEST DATA
+    def checkaccuracy(self,x_test,y_test,num_images):
         tot=x_test[0].shape[0]
         wrong=0
-       
+        
         iter=len(x_test)
         loss=0
+     
         for i in range(iter):
+            
             guess=self.run(cp.array(x_test[i]),0,False)
             guess=guess.reshape(guess.shape[0],)
-            # self.loss_test+=((np.sum((self.layer1_weights)**2)+np.sum((self.layer2_weights)**2)+np.sum((self.layer3_weights)**2)) *(s/(2*num_images)) )
             ans=cp.array(y_test[i])
- 
             layer_MLP=self.MLP_layer.reshape(self.MLP_layer.shape[0],self.MLP_layer.shape[1])
             loss+=cp.sum((layer_MLP-ans)**2) / num_images
 
@@ -266,9 +278,8 @@ class CNN:
             one_hot_encoded_guess=one_hot_encoded_guess.reshape(one_hot_encoded_guess.shape[0],n_values)
             
             wrong+=cp.sum(cp.max(ans-one_hot_encoded_guess,axis=1))
-      
-        print(typeloss + str(loss))
-        return (1-wrong/num_images)*100
+     
+        return (1-wrong/num_images)*100,loss
     
         
     
@@ -277,14 +288,15 @@ class CNN:
 myNetwork=CNN([1,100,200,300,10],[(5,5),(3,3),(3,3)])
  
  
-epoch=400
-batch_size=32
+epoch=1000
+batch_size=200
 num_images=60000
 num_test_images=10000
 
 num_batch_iteratons=num_images//batch_size 
  
 (x_train,y),(x_test,y2)=tf.keras.datasets.fashion_mnist.load_data()
+
  
 x_train=x_train.reshape(60000,28,28,1) 
 x_test=x_test.reshape(10000,28,28,1)
@@ -296,14 +308,10 @@ y_train[np.arange(y.size),y] = 1
 y_train=np.array_split(y_train,60000//batch_size)
 y_test = np.zeros((y2.size, y2.max()+1))
 y_test[np.arange(y2.size),y2] = 1
-x_test=np.array_split(x_test,10000//100)
+x_test=np.array_split(x_test,10000//1000)
  
-y_test=np.array_split(y_test,10000//100)
- 
-begin_accuracy=myNetwork.checkaccuracy(x_test,y_test,num_test_images,"Initial test loss: ")
-best_acc=begin_accuracy
-print(begin_accuracy)
-print("\n")
+y_test=np.array_split(y_test,10000//1000)
+best_acc=0
 for x in range(epoch):
   
     s=time.time()
@@ -314,11 +322,15 @@ for x in range(epoch):
         myNetwork.train(cp.array(x_train[i]),cp.array(y_train[i]),num_images,batch_size)
    
     print('Epoch '+ str(x+1)+' Done | Time Taken: '+ str(time.time()-s)+"s")
-    cp._default_memory_pool.free_all_blocks()
-    train_acc=myNetwork.checkaccuracy(x_train,y_train,num_images,"Train loss: ")
-    test_acc=myNetwork.checkaccuracy(x_test,y_test,num_test_images,"Test loss: ")
+  
+    train_acc=myNetwork.acc 
+    print("Loss: " + str(myNetwork.loss) + "| Accuracy: " + str(train_acc))
+    test_acc,test_loss=myNetwork.checkaccuracy(x_test,y_test,num_test_images)
+    print("valLoss: " + str(test_loss) + "| valAccuracy: " + str(test_acc))
     if test_acc>best_acc:
       print("New Best: " + str(test_acc))
       
       best_acc=test_acc
+    myNetwork.loss=myNetwork.acc=myNetwork.wrong=0
     print("\n")
+    
